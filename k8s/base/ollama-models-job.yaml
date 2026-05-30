@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-pull-models
+  namespace: mtg-rag
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-ollama
+          image: curlimages/curl:8.12.1
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://ollama:11434/; do
+                echo "waiting for ollama..."
+                sleep 5
+              done
+      containers:
+        - name: pull
+          image: ollama/ollama:latest
+          env:
+            - name: OLLAMA_HOST
+              value: "http://ollama:11434"
+          command:
+            - sh
+            - -c
+            - |
+              ollama pull llama3.2:3b
+              ollama pull nomic-embed-text

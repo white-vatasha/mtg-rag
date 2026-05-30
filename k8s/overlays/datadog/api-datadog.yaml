@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: mtg-rag
+spec:
+  template:
+    metadata:
+      labels:
+        tags.datadoghq.com/service: mtg-rag-api
+        tags.datadoghq.com/env: minikube
+        tags.datadoghq.com/version: "0.1.0"
+      annotations:
+        ad.datadoghq.com/api.logs: |
+          [{"source":"python","service":"mtg-rag-api","log_processing_rules":[{"type":"multi_line","name":"json_stack","pattern":"^\\{"}]}]
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_ENTITY_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid

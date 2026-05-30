@@ -1,0 +1,5 @@
+# Default entrypoint — same as k8s/base (use for kubectl apply -k k8s/)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - base

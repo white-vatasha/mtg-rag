@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mtg-rag-config
+  namespace: mtg-rag
+data:
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  OLLAMA_LLM_MODEL: "llama3.2:3b"
+  OLLAMA_LLM_NUM_CTX: "4096"
+  OLLAMA_EMBED_MODEL: "nomic-embed-text"
+  OLLAMA_REQUEST_TIMEOUT: "900"
+  DATABASE_URL: "sqlite:////data/app.db"
+  CORS_ORIGINS: "http://localhost,http://127.0.0.1,http://mtg-rag.local"
+  ANONYMIZED_TELEMETRY: "False"
+  AUTO_INDEX_ON_STARTUP: "true"
+  AUTO_DOWNLOAD_CARDS: "true"
+  ATOMIC_CARDS_URL: "https://mtgjson.com/api/v5/AtomicCards.json"
+  OLLAMA_WAIT_SECONDS: "600"
+  INDEX_DECKS_ON_STARTUP: "true"
+  # Datadog (off by default; enable via k8s/overlays/datadog overlay)
+  DD_TRACE_ENABLED: "false"
+  DD_METRICS_ENABLED: "false"
+  DD_LOGS_JSON: "true"
+  DD_LOGS_INJECTION: "true"
+  DD_SERVICE: "mtg-rag-api"
+  DD_ENV: "development"
+  DD_VERSION: "0.1.0"
+  LOG_LEVEL: "INFO"
