@@ -27,13 +27,21 @@ spec:
                   name: datadog-secret
                   key: api-key
             - name: DD_SITE
-              value: "datadoghq.com"
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secret
+                  key: site
+                  optional: true
+            - name: DD_CLUSTER_NAME
+              value: "mtg-rag-minikube"
             - name: DD_ENV
               valueFrom:
                 configMapKeyRef:
                   name: mtg-rag-config
                   key: DD_ENV
                   optional: true
+            - name: DD_TAGS
+              value: "env:minikube cluster:mtg-rag-minikube"
             - name: DD_APM_ENABLED
               value: "true"
             - name: DD_LOGS_ENABLED
@@ -44,10 +52,19 @@ spec:
               value: "true"
             - name: DD_DOGSTATSD_NON_LOCAL_TRAFFIC
               value: "true"
-            - name: DD_KUBERNETES_KUBELET_HOST
+            # Kubernetes / container infra (Infrastructure list, Orchestrator)
+            - name: DD_COLLECT_KUBERNETES_EVENTS
+              value: "true"
+            - name: DD_LEADER_ELECTION
+              value: "true"
+            - name: DD_KUBERNETES_COLLECT_METADATA
+              value: "true"
+            - name: DD_KUBELET_TLS_VERIFY
+              value: "false"
+            - name: DD_KUBERNETES_KUBELET_NODENAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.hostIP
+                  fieldPath: spec.nodeName
             - name: DD_HOSTNAME
               valueFrom:
                 fieldRef:
@@ -117,6 +134,22 @@ rules:
       - services
       - events
       - endpoints
+      - namespaces
+      - configmaps
+      - persistentvolumeclaims
+      - persistentvolumes
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - daemonsets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
     verbs: ["get", "list", "watch"]
   - apiGroups: ["quota.openshift.io"]
     resources: ["clusterresourcequotas"]

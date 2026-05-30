@@ -2,7 +2,7 @@
 
 A local **Retrieval-Augmented Generation (RAG)** app for Magic: The Gathering **Commander (EDH)**. Ask questions about competitive decks, card rules, and EDHRec meta; log in to save your own decklists.
 
-Powered by **ChromaDB**, **LlamaIndex**, and **Ollama** (`llama3.2:3b` in Minikube; `llama3.1:8b` if you have enough RAM locally) + `nomic-embed-text`.
+Powered by **ChromaDB**, **LlamaIndex**, and **Ollama** (`llama3.2:3b` + `nomic-embed-text` by default; larger models if you have enough RAM).
 
 ## Features
 
@@ -11,6 +11,7 @@ Powered by **ChromaDB**, **LlamaIndex**, and **Ollama** (`llama3.2:3b` in Miniku
 - **Color-aware answers** — parses requests like “blue-red” as Izzet (U/R), not Azorius
 - **Save decklists** — when a response includes a deck list, logged-in users can save it to **My Decks**
 - **Runs locally or on Minikube** — same API with automatic indexing on cluster startup
+- **Optional Datadog** — JSON logs, APM, DogStatsD, and Kubernetes infrastructure via a Kustomize overlay
 
 ---
 
@@ -35,11 +36,13 @@ From the **project root** (`MTG-Rag/`):
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # optional: set SECRET_KEY
+cp .env.example .env   # set SECRET_KEY; optional Datadog vars
 uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 On first start the API will **index Commander-legal cards** if `ingestion/mtg_db/` is empty (can take 20–40 minutes). Set `AUTO_DOWNLOAD_CARDS=true` in `.env` to fetch `AtomicCards.json` automatically.
+
+For Datadog APM locally, use `ddtrace-run uvicorn ...` (see [Datadog observability](#datadog-observability)).
 
 ### 2. Frontend
 
@@ -77,7 +80,7 @@ Run **Ollama**, the **API**, and the **frontend** in a local cluster with persis
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | `brew install kubectl` |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Required as Minikube driver |
 
-**Memory:** The deploy script requests **6 GB** for Minikube (fits Docker Desktop’s default 8 GB VM). For a larger cluster:
+**Memory:** The deploy script requests **6 GB** for Minikube (fits Docker Desktop’s default 8 GB VM). The cluster uses **`llama3.2:3b`** with a capped context window so chat fits in that RAM. For a larger cluster or `llama3.1:8b`, increase Docker Desktop memory:
 
 ```bash
 # Docker Desktop → Settings → Resources → Memory ≥ 12 GB, then:
@@ -98,7 +101,7 @@ The script will:
 1. Start Minikube (if needed) and set `kubectl` context to `minikube`
 2. Enable the ingress addon
 3. Build `mtg-rag-api` and `mtg-rag-frontend` images inside Minikube’s Docker
-4. Apply all manifests in `k8s/base` (creates namespace `mtg-rag`)
+4. Apply manifests (`kubectl apply -k k8s/base` — namespace `mtg-rag`)
 5. Wait for Ollama and pull `llama3.2:3b` + `nomic-embed-text`
 6. Wait for the API deployment (first boot **indexes inside the cluster**)
 
@@ -111,44 +114,46 @@ When `AUTO_INDEX_ON_STARTUP=true` (default in `k8s/base/configmap.yaml`), each A
 3. Embed Commander-legal cards into Chroma (first time: **~20–40 min**, persisted on PVC)  
 4. Index any deck/EDHRec files under `ingestion/scraped_decks/` on the volume  
 
-Watch progress:
+Watch progress (bootstrap lines are prefixed `[mtg-rag]` and emitted as JSON when Datadog logging is on):
 
 ```bash
 kubectl -n mtg-rag get pods -w
 kubectl -n mtg-rag logs -f deployment/api
 ```
 
-Check health (includes indexing phase):
-
-```bash
-curl -s http://$(minikube ip):30080/api/health | python3 -m json.tool
-```
-
-Traffic is only routed when RAG is ready (`/api/ready` returns 200).
+Wait until logs show `Application startup complete` and `/api/ready` returns 200.
 
 ### Access the app
 
-On **Minikube with the Docker driver (macOS)**, `http://$(minikube ip):30080` does **not** work until a tunnel is running. Pods can be `Running` while the browser times out.
+On **Minikube with the Docker driver (macOS)**, `http://$(minikube ip):30080` often **does not work** until a tunnel or port-forward is running. Pods can be `Running` while the browser times out.
+
+**Option A — port-forward (simplest):**
 
 ```bash
-# Terminal 1 — leave open (routes NodePort to your Mac)
-minikube tunnel
+kubectl -n mtg-rag port-forward svc/frontend 30080:80
+# Keep that terminal open, then:
+open http://127.0.0.1:30080
+```
 
+**Option B — Minikube tunnel:**
+
+```bash
+# Terminal 1 — leave open
+minikube tunnel
 # Terminal 2
 open "http://$(minikube ip):30080"
 ```
 
-Or use Minikube’s port-forward (also keep that terminal open):
+**Option C — Minikube service helper:**
 
 ```bash
 minikube service frontend -n mtg-rag
 ```
 
-Ingress (after tunnel):
+Check health:
 
 ```bash
-echo "$(minikube ip) mtg-rag.local" | sudo tee -a /etc/hosts
-open http://mtg-rag.local
+curl -s http://127.0.0.1:30080/api/health | python3 -m json.tool
 ```
 
 ### Optional: seed an existing local index
@@ -173,14 +178,14 @@ Requires `context/AtomicCards.json`, and ideally `ingestion/mtg_db/` already bui
 
 | Symptom | Fix |
 |---------|-----|
-| `connection refused` on `localhost:8080` | Minikube not started or wrong context: `minikube start` then `kubectl config use-context minikube` |
-| `namespace "mtg-rag" not found` | Deploy not applied yet: `./scripts/minikube-deploy.sh` from project root |
-| `no such file or directory: ./scripts/minikube-deploy.sh` | `cd` to project root (`MTG-Rag/`), not a subdirectory |
-| `minikube is not installed` | `brew install minikube` |
-| `Docker Desktop has only X MB memory` | Lower RAM: default script uses 6 GB, or increase Docker Desktop memory |
-| API pod `Pending` | Insufficient cluster memory: `kubectl describe pod -n mtg-rag -l app=api` |
-| Frontend `ErrImagePull` | Rebuild inside Minikube: `eval $(minikube docker-env)` then `docker build -t mtg-rag-frontend:latest -f docker/Dockerfile.frontend .` |
-| `/api/query` **500** — `requires more system memory` | Default `llama3.1:8b` needs ~20 GiB; cluster uses `llama3.2:3b` + `OLLAMA_LLM_NUM_CTX=4096`. Rebuild API image after config changes. |
+| `connection refused` on `localhost:8080` | Wrong kubectl context: `minikube start` then `kubectl config use-context minikube` |
+| `namespace "mtg-rag" not found` | Run `./scripts/minikube-deploy.sh` from project root |
+| Browser cannot open `minikube ip:30080` | Use [port-forward](#access-the-app) or `minikube tunnel` (Docker driver on Mac) |
+| API stuck at `Waiting for application startup` | First-time card indexing; watch `kubectl -n mtg-rag logs -f deployment/api` (20–40+ min) |
+| API pod `Pending` | Insufficient memory: `kubectl describe pod -n mtg-rag -l app=api` |
+| `/api/query` **500** — `requires more system memory` | Ollama cannot load the chat model. Cluster defaults: `llama3.2:3b`, `OLLAMA_LLM_NUM_CTX=4096`. Rebuild/restart API after changing `k8s/base/configmap.yaml`. |
+| `/api/query` **500** — `timed out` | Normal on CPU-only Minikube; first answer can take **1–3+ minutes**. `OLLAMA_REQUEST_TIMEOUT=900` in cluster config. |
+| `kustomize` security error on overlay | Manifests live under `k8s/base/`; overlay references `../../base`, not loose files in `k8s/`. |
 
 ---
 
@@ -208,13 +213,17 @@ Copy `.env.example` to `.env` for local development. In Minikube, edit `k8s/base
 |----------|---------|-------------|
 | `SECRET_KEY` | (change me) | JWT signing key |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API (`http://ollama:11434` in cluster) |
-| `OLLAMA_LLM_MODEL` | `llama3.2:3b` (K8s) | Chat model; use `llama3.1:8b` locally only if you have ~24GB RAM for Ollama |
+| `OLLAMA_LLM_MODEL` | `llama3.2:3b` | Chat model; `llama3.1:8b` only if Ollama has ~20+ GiB free |
+| `OLLAMA_LLM_NUM_CTX` | `4096` | Max context tokens (lowers RAM on Minikube) |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_REQUEST_TIMEOUT` | `300` / `900` in K8s | Seconds to wait for Ollama chat/embed |
 | `AUTO_INDEX_ON_STARTUP` | `true` | Index cards + decks on API boot |
 | `AUTO_DOWNLOAD_CARDS` | `false` / `true` in K8s | Download AtomicCards.json if missing |
 | `ATOMIC_CARDS_URL` | MTGJSON API URL | Source for card download |
 | `INDEX_DECKS_ON_STARTUP` | `true` | Index `scraped_decks/` files on boot |
 | `CORS_ORIGINS` | localhost dev URLs | Comma-separated allowed origins |
+| `DD_API_KEY` | — | Datadog **API** key (see Datadog section; not Application key) |
+| `DD_SITE` | `datadoghq.com` | `datadoghq.eu` for EU orgs |
 | `DD_TRACE_ENABLED` | `false` | FastAPI/SQLAlchemy/requests APM via `ddtrace` |
 | `DD_METRICS_ENABLED` | `false` | DogStatsD bootstrap/query metrics |
 | `DD_LOGS_JSON` | `true` | JSON logs on stdout for Datadog log pipelines |
@@ -225,11 +234,20 @@ Copy `.env.example` to `.env` for local development. In Minikube, edit `k8s/base
 
 ## Datadog observability
 
-The API emits **JSON logs** (with optional trace correlation), **APM traces** for HTTP, RAG bootstrap, and `/api/query`, and **DogStatsD** gauges for bootstrap phases when enabled.
+The API emits **JSON logs** (with optional trace correlation), **APM traces** for HTTP, RAG bootstrap, and `/api/query`, and **DogStatsD** gauges for bootstrap phases when enabled. The Minikube overlay adds a **DaemonSet agent** for logs, APM, process/containers, and Kubernetes metadata.
+
+### API keys (read this first)
+
+- Use an **API key** from [Organization Settings → API Keys](https://app.datadoghq.com/organization-settings/api-keys).
+- Do **not** use an **Application key** (different product; validation will fail with HTTP 403).
+- Match **region** in `.env`:
+  - US: `DD_SITE=datadoghq.com`
+  - EU: `DD_SITE=datadoghq.eu` (log in at `app.datadoghq.eu`)
+- No quotes in `.env`: `DD_API_KEY=abc123...` not `DD_API_KEY="..."`
 
 ### Local development
 
-1. Run a [Datadog Agent](https://docs.datadoghq.com/agent/) on your machine (Docker example):
+1. Run a [Datadog Agent](https://docs.datadoghq.com/agent/) on your machine:
 
    ```bash
    docker run -d --name dd-agent \
@@ -240,9 +258,9 @@ The API emits **JSON logs** (with optional trace correlation), **APM traces** fo
      gcr.io/datadoghq/agent:7
    ```
 
-2. Copy `.env.example` to `.env` and set `DD_TRACE_ENABLED=true`, `DD_METRICS_ENABLED=true`, `DD_AGENT_HOST=127.0.0.1`.
+2. In `.env`: `DD_TRACE_ENABLED=true`, `DD_METRICS_ENABLED=true`, `DD_API_KEY`, `DD_SITE`.
 
-3. Start the API (tracing is wired via `ddtrace-run` in `docker/Dockerfile.api`; locally use the same):
+3. Start the API:
 
    ```bash
    ddtrace-run uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
@@ -250,25 +268,48 @@ The API emits **JSON logs** (with optional trace correlation), **APM traces** fo
 
 In Datadog: **APM → Services** (`mtg-rag-api`), **Logs** (source `python`), **Metrics** (`mtg_rag.bootstrap.*`).
 
-### Minikube + Datadog Agent
+### Minikube + Datadog
 
-1. Add your API key to `.env` (copy from `.env.example`):
+1. Configure `.env`:
 
    ```bash
    cp .env.example .env
-   # Edit .env: DD_API_KEY=<your-datadog-api-key>
+   # DD_API_KEY=<32-char API key>
+   # DD_SITE=datadoghq.com   # or datadoghq.eu
    ```
 
-2. Run the setup script (applies overlay, agent, rebuilds API):
+2. Run the setup script (validates the key, updates the cluster secret, applies overlay, rebuilds API):
 
    ```bash
    chmod +x scripts/datadog-k8s-setup.sh
    ./scripts/datadog-k8s-setup.sh
    ```
 
-   Or one-shot without `.env`: `DD_API_KEY='...' ./scripts/datadog-k8s-setup.sh`
+   You must see **`API key OK (site: …)`** before anything is deployed. If validation fails, fix the key/site — the agent will not send infrastructure, logs, or traces until the key returns HTTP 200.
 
-The overlay enables tracing/metrics, deploys a node **DaemonSet** agent, and sets `DD_AGENT_HOST` to the node IP so the API pod sends traces and StatsD to the agent on the same node.
+3. Confirm the agent is healthy:
+
+   ```bash
+   kubectl -n mtg-rag logs -l app=datadog-agent --tail=20
+   ```
+
+   There should be **no** `API key is invalid` or repeated kubelet errors.
+
+4. In Datadog (after 2–5 minutes):
+
+   - **Infrastructure → Containers** — filter `cluster:mtg-rag-minikube`
+   - **APM → Services** — `mtg-rag-api`, env `minikube`
+   - **Logs** — service `mtg-rag-api`, source `python`
+
+### Datadog troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Setup script: `Datadog rejected this API key` | Wrong key type, wrong `DD_SITE`, revoked key, or quotes in `.env`. Create a new **API** key; script auto-tries EU if US fails. |
+| Infrastructure empty, agent logs `403` | Same as above — re-run `./scripts/datadog-k8s-setup.sh` after fixing `.env`. |
+| `impossible to reach Kubelet` | Addressed in overlay (`DD_KUBELET_TLS_VERIFY=false`, `DD_KUBERNETES_KUBELET_NODENAME`). Restart agent: `kubectl -n mtg-rag rollout restart daemonset/datadog-agent` |
+| APM in API logs: `Connect` to `:8126` | Agent must expose hostPort 8126 (in overlay). Ensure agent pod is Running on the same node as the API. |
+| `kustomize` path / security error | Apply with `kubectl apply -k k8s/overlays/datadog` only; do not list parent YAML paths from the overlay folder. |
 
 ---
 
@@ -276,21 +317,23 @@ The overlay enables tracing/metrics, deploys a node **DaemonSet** agent, and set
 
 ```
 MTG-Rag/
-├── api/                 # FastAPI: query, auth, decks, color parsing
-├── ingestion/           # RAG pipeline, scraper, startup indexing
-│   ├── mtg_db/          # Chroma persistent store (gitignored)
-│   └── scraped_decks/   # Decklists + knowledge/ (gitignored)
-├── frontend/            # React + Vite UI
-├── context/             # AtomicCards.json (gitignored)
-├── data/                # SQLite app.db (gitignored)
+├── api/                    # FastAPI: query, auth, decks, observability
+├── ingestion/              # RAG pipeline, scraper, startup indexing
+│   ├── mtg_db/             # Chroma persistent store (gitignored)
+│   └── scraped_decks/      # Decklists + knowledge/ (gitignored)
+├── frontend/               # React + Vite UI
+├── context/                # AtomicCards.json (gitignored)
+├── data/                   # SQLite app.db (gitignored)
 ├── k8s/
-│   ├── base/              # Core manifests (kubectl apply -k k8s/base)
-│   └── overlays/datadog/  # Optional Datadog agent + APM/logging
-├── docker/              # Dockerfiles + nginx config
+│   ├── kustomization.yaml  # Wrapper → k8s/base
+│   ├── base/               # Core manifests (deploy script uses this)
+│   └── overlays/datadog/ # Agent DaemonSet + APM/logging patches
+├── docker/                 # Dockerfiles + nginx config
 └── scripts/
     ├── minikube-deploy.sh
     ├── minikube-seed-data.sh
-    └── minikube-teardown.sh
+    ├── minikube-teardown.sh
+    └── datadog-k8s-setup.sh
 ```
 
 ---
@@ -299,11 +342,12 @@ MTG-Rag/
 
 ```mermaid
 flowchart LR
-  User --> Frontend[frontend nginx :30080]
-  Frontend -->|/api| API[api FastAPI :8000]
-  API --> Ollama[ollama :11434]
-  API --> Chroma[(PVC rag-data\nChroma + SQLite)]
-  API --> Ollama
+  User --> Frontend[frontend nginx]
+  Frontend -->|/api| API[api FastAPI]
+  API --> Ollama[ollama]
+  API --> Chroma[(PVC rag-data)]
+  API -.->|APM/logs| DD[datadog-agent DaemonSet]
+  DD -.->|optional| Datadog[Datadog cloud]
 ```
 
 ---
